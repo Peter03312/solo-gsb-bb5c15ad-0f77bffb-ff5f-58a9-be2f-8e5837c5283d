@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}计划 #{{ detail.plan.id }} · 家庭光伏储能调度{% endblock %}
+{% block content %}
+{% set p = detail.plan %}
+{% set rows = detail.periods %}
+<div class="card">
+  <div class="toolbar">
+    <h2 style="margin:0;flex:1">
+      计划 #{{ p.id }}
+      {% if p.status == 'active' %}<span class="tag act">当前</span>
+      {% else %}<span class="tag hist">历史版本（只读）</span>{% endif %}
+      {% if p.source == 'new' %}<span class="tag new">新建</span>
+      {% else %}<span class="tag actu">实测重算</span>{% endif %}
+    </h2>
+    <a class="btn ghost" href="/">返回总览</a>
+    {% if p.status != 'active' %}<a class="btn secondary" href="/plans">版本列表</a>{% endif %}
+  </div>
+  <p class="muted">
+    创建时间：{{ p.created_at }} · 已执行 {{ p.executed_count }} 段 ·
+    容量 {{ p.capacity }} Wh / 初始 {{ p.initial_soc }} Wh / 保留 {{ p.reserve }} Wh /
+    每段充放上限 {{ p.charge_limit }}、{{ p.discharge_limit }} Wh
+  </p>
+  {% if p.warning %}<div class="alert warn">{{ p.warning }}</div>{% endif %}
+
+  <div class="grid4">
+    <div class="stat"><div class="k">全周期总费用</div>
+      <div class="v mono">{{ "%.2f"|format(p.total_cost) }}<span class="u">元</span></div></div>
+    <div class="stat"><div class="k">充放电总量</div>
+      <div class="v mono">{{ detail.total_cycling }}<span class="u">Wh</span></div></div>
+    <div class="stat"><div class="k">总购电量</div>
+      <div class="v mono">{{ rows | sum(attribute='grid_buy') }}<span class="u">Wh</span></div></div>
+    <div class="stat"><div class="k">总弃光</div>
+      <div class="v mono">{{ rows | sum(attribute='curtail') }}<span class="u">Wh</span></div></div>
+  </div>
+
+  <div id="chart1"></div>
+  <p class="legend">图例：
+    <i style="background:#1f5fa8"></i>用电 Wh
+    <i style="background:#e8a200"></i>光伏 Wh
+    <i style="background:#177245"></i>购电 Wh
+    <i style="background:#b25f00"></i>弃光 Wh</p>
+  <div id="chart2"></div>
+  <p class="legend">图例：
+    <i style="background:#2a9d8f"></i>充电 Wh
+    <i style="background:#7a4fb0"></i>放电 Wh
+    <i style="background:#41505e"></i>期末电量 Wh（右量级独立）</p>
+
+  <div class="table-wrap" style="margin-top:14px">
+    <table class="data">
+      <thead><tr>
+        <th class="t">段</th><th class="t">时间</th>
+        <th>用电</th><th>光伏</th><th>购电上限</th><th>单价</th>
+        <th>购电</th><th>充电</th><th>放电</th><th>弃光</th>
+        <th>期末电量</th><th>费用 元</th><th class="t">状态</th>
+      </tr></thead>
+      <tbody>
+      {% for row in rows %}
+        <tr class="{{ 'executed locked' if row.is_executed else ('stale' if p.warning) }}">
+          <td class="t">{{ row.period + 1 }}</td>
+          <td class="t mono">{{ row.time_label }}</td>
+          <td class="mono">{{ row.load }}</td>
+          <td class="mono">{{ row.pv }}</td>
+          <td class="mono">{{ row.grid_limit }}</td>
+          <td class="mono">{{ "%.4f"|format(row.price) }}</td>
+          <td class="mono">{{ row.grid_buy }}</td>
+          <td class="mono">{{ row.charge }}</td>
+          <td class="mono">{{ row.discharge }}</td>
+          <td class="mono">{{ row.curtail }}</td>
+          <td class="mono">{{ row.soc_end }}</td>
+          <td class="mono">{{ "%.4f"|format(row.cost) }}</td>
+          <td class="t">
+            {% if row.is_executed %}已执行
+            {% elif p.warning %}<span class="tag hist">参考</span>
+            {% else %}计划{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+"use strict";
+const data = {{ rows_json }};
+document.getElementById("chart1").appendChild(lineChart([
+  { data: data.map(d => d.load), color: "#1f5fa8", area: true },
+  { data: data.map(d => d.pv), color: "#e8a200" },
+  { data: data.map(d => d.grid_buy), color: "#177245" },
+  { data: data.map(d => d.curtail), color: "#b25f00" },
+]));
+document.getElementById("chart2").appendChild(lineChart([
+  { data: data.map(d => d.charge), color: "#2a9d8f" },
+  { data: data.map(d => d.discharge), color: "#7a4fb0" },
+  { data: data.map(d => d.soc_end), color: "#41505e", area: true },
+]));
+</script>
+{% endblock %}

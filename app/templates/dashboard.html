@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}总览 · 家庭光伏储能调度{% endblock %}
+{% block content %}
+<div id="app">
+  <div class="card">
+    <div class="toolbar">
+      <h2 style="margin:0;flex:1">调度总览</h2>
+      <a class="btn secondary" href="/input">填写/修改预测</a>
+      <a class="btn" href="/actuals">登记实测</a>
+      <button class="btn danger" id="resetBtn">清空数据</button>
+    </div>
+    <div id="messages"></div>
+    <div id="content"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+"use strict";
+const app = document.getElementById("content");
+const msgs = document.getElementById("messages");
+
+function renderEmpty() {
+  app.innerHTML = "";
+  app.appendChild(el("div", { class: "empty" },
+    el("div", { class: "big" }, "🔋"),
+    el("div", {}, "还没有调度计划。"),
+    el("div", { style: "margin:12px 0 18px" },
+      el("a", { class: "btn", href: "/input" }, "去填写 96 段预测并生成计划"))
+  ));
+}
+
+function renderDashboard(st) {
+  msgs.innerHTML = "";
+  app.innerHTML = "";
+  const p = st.plan;
+  if (!p) { renderEmpty(); return; }
+
+  if (p.warning) {
+    msgs.appendChild(alertBox("warn", p.warning));
+  }
+
+  const rows = st.periods;
+  const k = st.actuals.length;
+  const exec = rows.slice(0, k);
+  const future = rows.slice(k);
+  const execCost = exec.reduce((s, r) => s + r.cost, 0);
+
+  const stats = el("div", { class: "grid4" },
+    stat("累计购电费用（已执行）", yuan(execCost), "元"),
+    stat("计划全周期总费用", yuan(p.total_cost), "元"),
+    stat("已执行时段", `${k} / 96`, "段"),
+    stat("计划版本", `#${p.id}`, p.source === "new" ? "新建" : "实测重算"),
+  );
+  app.appendChild(stats);
+
+  // 曲线：用电 / 光伏 / 期末电量
+  const chartCard = el("div", { class: "card", style: "background:#fff;padding:14px 16px" });
+  chartCard.appendChild(el("h3", { style: "margin:0 0 4px" },
+    "96 段曲线（绿色段为已执行，右侧为按实测重算的计划）"));
+  chartCard.appendChild(lineChart([
+    { data: rows.map(r => r.load), color: "#1f5fa8", area: true },
+    { data: rows.map(r => r.pv), color: "#e8a200" },
+  ]));
+  chartCard.appendChild(el("p", { class: "legend" },
+    "图例：",
+    el("i", { style: "background:#1f5fa8" }), "用电 Wh",
+    el("i", { style: "background:#e8a200" }), "光伏 Wh"));
+  chartCard.appendChild(lineChart([
+    { data: rows.map(r => r.soc_end), color: "#177245", area: true },
+  ]));
+  chartCard.appendChild(el("p", { class: "legend" },
+    "图例：", el("i", { style: "background:#177245" }),
+    `期末电量 Wh（容量 ${p.capacity}，保留 ${p.reserve}）`));
+  app.appendChild(chartCard);
+
+  // 汇总表
+  const sum = (arr, key) => arr.reduce((s, r) => s + r[key], 0);
+  const sumCard = el("div", { class: "card" });
+  sumCard.appendChild(el("h2", {}, "分段汇总"));
+  const tbl = el("table", { class: "data" });
+  tbl.innerHTML = `<tr><th class="t">范围</th><th>购电 Wh</th><th>充电 Wh</th>
+    <th>放电 Wh</th><th>弃光 Wh</th><th>费用 元</th></tr>`;
+  const tr = (name, list) => el("tr", {},
+    el("td", { class: "t" }, name),
+    el("td", { class: "mono" }, String(sum(list, "grid_buy"))),
+    el("td", { class: "mono" }, String(sum(list, "charge"))),
+    el("td", { class: "mono" }, String(sum(list, "discharge"))),
+    el("td", { class: "mono" }, String(sum(list, "curtail"))),
+    el("td", { class: "mono" }, yuan(sum(list, "cost"))));
+  tbl.appendChild(tr("已执行", exec));
+  tbl.appendChild(tr("余段计划", future));
+  tbl.appendChild(tr("全周期", rows));
+  sumCard.appendChild(tbl);
+  app.appendChild(sumCard);
+
+  // 旧计划入口
+  const hist = el("div", { class: "card" });
+  hist.appendChild(el("h2", {}, `计划版本（共 ${st.plan_count} 个，旧计划只读可查）`));
+  // 版本列表在 /api/state 中未包含，单独取
+  hist.appendChild(el("p", { class: "muted" },
+    "每次新建计划或登记实测后生成新版本，可在历史列表查看："));
+  const links = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap" });
+  for (const hp of st.plans) {
+    const tag = hp.status === "active" ? "当前" : "旧版";
+    links.appendChild(el("a", {
+      class: "btn ghost",
+      href: `/plans/${hp.id}`,
+      style: "padding:5px 12px;font-size:12.5px",
+    }, `#${hp.id} [${tag}] ${hp.source === "new" ? "新建" : `实测×${hp.executed_count}`} · ${yuan(hp.total_cost)} 元`));
+  }
+  hist.appendChild(links);
+  app.appendChild(hist);
+}
+
+function stat(k, v, u) {
+  return el("div", { class: "stat" },
+    el("div", { class: "k" }, k),
+    el("div", { class: "v mono" }, v,
+      u ? el("span", { class: "u" }, u) : null));
+}
+
+document.getElementById("resetBtn").addEventListener("click", async () => {
+  if (!confirm("确定清空全部计划与实测数据？此操作不可恢复。")) return;
+  await api("/api/reset", { method: "POST" });
+  location.reload();
+});
+
+api("/api/state").then(renderDashboard).catch(e => {
+  msgs.appendChild(alertBox("error", e.message));
+});
+</script>
+{% endblock %}

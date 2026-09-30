@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}预测输入 · 家庭光伏储能调度{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>未来 96 个 15 分钟时段预测</h2>
+  <div id="messages"></div>
+
+  <h3>电池参数（整数 Wh；每段充/放电上限按 15 分钟能量计）</h3>
+  <div class="formgrid">
+    <label>电池容量 Wh<input type="number" min="1" step="1" id="f_capacity"></label>
+    <label>初始电量 Wh<input type="number" min="0" step="1" id="f_initial"></label>
+    <label>最低保留电量 Wh<input type="number" min="0" step="1" id="f_reserve"></label>
+    <label>每段充电上限 Wh<input type="number" min="1" step="1" id="f_charge"></label>
+    <label>每段放电上限 Wh<input type="number" min="1" step="1" id="f_discharge"></label>
+  </div>
+
+  <div class="toolbar" style="margin-top:16px">
+    <button class="btn secondary" id="fillSample">填入示例数据</button>
+    <button class="btn ghost" id="clearInputs">清空表格数值</button>
+    <span class="muted">用电/光伏/购电上限为非负整数 Wh；购电单价为非负数（元/kWh）。缺项、负值或越界将拒绝保存。</span>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data" id="gridTable">
+      <thead><tr>
+        <th class="t">段</th><th class="t">时间</th>
+        <th>用电 Wh</th><th>光伏预测 Wh</th><th>购电上限 Wh</th><th>单价 元/kWh</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="toolbar" style="margin-top:16px">
+    <button class="btn" id="submitBtn">生成调度计划</button>
+    <a class="btn ghost" href="/">返回总览</a>
+    <span id="submitStatus" class="muted"></span>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+"use strict";
+const tbody = document.querySelector("#gridTable tbody");
+const msgs = document.getElementById("messages");
+const inputs = [];
+
+for (let t = 0; t < 96; t++) {
+  const mk = (id) => {
+    const i = el("input", { type: "number", min: "0", step: "1", "data-t": t, "data-k": id });
+    i.addEventListener("input", () => i.classList.remove("invalid"));
+    return i;
+  };
+  const cells = {};
+  const tr = el("tr", {},
+    el("td", { class: "t" }, String(t + 1)),
+    el("td", { class: "t mono" }, periodLabel(t)),
+  );
+  for (const k of ["load", "pv", "grid_limit", "price"]) {
+    const inp = (k === "price")
+      ? el("input", { type: "number", min: "0", step: "0.0001", "data-t": t, "data-k": k })
+      : mk(k);
+    inp.addEventListener("input", () => inp.classList.remove("invalid"));
+    cells[k] = inp;
+    tr.appendChild(el("td", {}, inp));
+  }
+  inputs.push(cells);
+  tbody.appendChild(tr);
+}
+
+function fillForm(data) {
+  document.getElementById("f_capacity").value = data.battery.capacity;
+  document.getElementById("f_initial").value = data.battery.initial_soc;
+  document.getElementById("f_reserve").value = data.battery.reserve;
+  document.getElementById("f_charge").value = data.battery.charge_limit;
+  document.getElementById("f_discharge").value = data.battery.discharge_limit;
+  data.periods.forEach((p, t) => {
+    inputs[t].load.value = p.load;
+    inputs[t].pv.value = p.pv;
+    inputs[t].grid_limit.value = p.grid_limit;
+    inputs[t].price.value = p.price;
+  });
+}
+
+document.getElementById("fillSample").addEventListener("click", async () => {
+  fillForm(await api("/api/sample"));
+  msgs.innerHTML = "";
+});
+
+document.getElementById("clearInputs").addEventListener("click", () => {
+  inputs.forEach(c => Object.values(c).forEach(i => i.value = ""));
+});
+
+function collect() {
+  const periods = inputs.map((c, t) => ({
+    period: t,
+    load: c.load.value, pv: c.pv.value,
+    grid_limit: c.grid_limit.value, price: c.price.value,
+  }));
+  return {
+    battery: {
+      capacity: document.getElementById("f_capacity").value,
+      initial_soc: document.getElementById("f_initial").value,
+      reserve: document.getElementById("f_reserve").value,
+      charge_limit: document.getElementById("f_charge").value,
+      discharge_limit: document.getElementById("f_discharge").value,
+    },
+    periods,
+  };
+}
+
+document.getElementById("submitBtn").addEventListener("click", async () => {
+  msgs.innerHTML = "";
+  document.querySelectorAll("input.invalid").forEach(i => i.classList.remove("invalid"));
+  const btn = document.getElementById("submitBtn");
+  btn.disabled = true;
+  document.getElementById("submitStatus").textContent = "正在求解…";
+  try {
+    const res = await api("/api/plans", { method: "POST", body: collect() });
+    msgs.appendChild(alertBox("ok",
+      `计划已保存：总费用 ${yuan(res.total_cost)} 元，充放电总量 ${res.total_cycling} Wh。`));
+    setTimeout(() => location.href = "/", 700);
+  } catch (e) {
+    msgs.appendChild(alertBox(e.status === 422 ? "warn" : "error", e.message));
+    if (e.data && e.data.field) {
+      const f = e.data.field;
+      if (f.startsWith("battery.")) {
+        const node = document.getElementById("f_" + f.split(".")[1]
+          .replace("initial_soc", "initial"));
+        if (node) node.classList.add("invalid");
+      }
+      // 高亮逐段字段
+      const m = f.match(/periods\.(\d+)\.(\w+)/);
+      if (m) inputs[+m[1]][m[2]].classList.add("invalid");
+    }
+  } finally {
+    btn.disabled = false;
+    document.getElementById("submitStatus").textContent = "";
+  }
+});
+
+// 进入页面时若已有计划，预填当前计划输入便于修改（但有实测时提示不能整体替换）
+(async () => {
+  const st = await api("/api/state");
+  if (st.plan && st.periods) {
+    const p = st.plan;
+    fillForm({
+      battery: {
+        capacity: p.capacity, initial_soc: p.initial_soc,
+        reserve: p.reserve, charge_limit: p.charge_limit,
+        discharge_limit: p.discharge_limit,
+      },
+      periods: st.periods.map(r => ({
+        load: r.load, pv: r.pv, grid_limit: r.grid_limit, price: r.price,
+      })),
+    });
+    if (st.actuals.length > 0) {
+      msgs.appendChild(alertBox("info",
+        `已有 ${st.actuals.length} 个已执行时段，预测输入已锁定；如需整体重新规划，请先在总览页清空数据。`));
+      document.getElementById("submitBtn").disabled = true;
+      document.querySelectorAll("#gridTable input, .formgrid input")
+        .forEach(i => { i.disabled = true; });
+      document.getElementById("submitStatus").textContent = "计划已锁定";
+    }
+  } else {
+    fillForm(await api("/api/sample"));
+  }
+})();
+</script>
+{% endblock %}

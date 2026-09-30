@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}计划版本 · 家庭光伏储能调度{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>计划版本列表</h2>
+  {% if plans %}
+  <table class="data">
+    <thead><tr>
+      <th class="t">版本</th><th class="t">状态</th><th>来源</th>
+      <th>已执行段数</th><th>总费用 元</th><th>创建时间</th><th class="t">查看</th>
+    </tr></thead>
+    <tbody>
+    {% for p in plans %}
+      <tr>
+        <td class="t mono">#{{ p.id }}</td>
+        <td class="t">
+          {% if p.status == 'active' %}<span class="tag act">当前</span>
+          {% else %}<span class="tag hist">历史</span>{% endif %}
+        </td>
+        <td>{{ '新建计划' if p.source == 'new' else '实测重算' }}</td>
+        <td class="mono">{{ p.executed_count }}</td>
+        <td class="mono">{{ "%.2f"|format(p.total_cost) }}</td>
+        <td class="t mono">{{ p.created_at }}</td>
+        <td class="t"><a href="/plans/{{ p.id }}">打开</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    <div class="big">🗂️</div>
+    <div>还没有任何计划版本。</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

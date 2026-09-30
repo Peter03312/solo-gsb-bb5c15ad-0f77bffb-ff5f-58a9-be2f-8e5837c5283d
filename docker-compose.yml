@@ -1,0 +1,15 @@
+services:
+  ems:
+    build: .
+    image: home-pv-ems:latest
+    container_name: home-pv-ems
+    ports:
+      # 宿主机:容器 —— 访问地址 http://localhost:8000
+      - "8000:8000"
+    volumes:
+      # 数据库持久化到宿主机 ./data 目录，容器重建数据不丢
+      - ./data:/data
+    environment:
+      DATABASE_PATH: /data/ems.db
+      PORT: "8000"
+    restart: unless-stopped

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}实测登记 · 家庭光伏储能调度{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>按时段顺序登记实测数据</h2>
+  <div id="messages"></div>
+  <div id="content"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+"use strict";
+const root = document.getElementById("content");
+const msgs = document.getElementById("messages");
+
+function actualForm(st) {
+  const p = st.plan, rows = st.periods, k = st.actuals.length;
+  if (!p) {
+    root.appendChild(el("div", { class: "empty" },
+      el("div", { class: "big" }, "📋"),
+      el("div", {}, "还没有计划，请先生成调度计划。"),
+      el("div", { style: "margin-top:14px" },
+        el("a", { class: "btn", href: "/input" }, "去填写预测"))));
+    return;
+  }
+
+  const socBefore = k === 0 ? p.initial_soc : st.actuals[k - 1].soc_end;
+  const planRow = rows[k];
+
+  if (k >= 96) {
+    root.appendChild(el("div", { class: "alert ok" },
+      "96 个时段已全部登记完毕，计划执行完成。"));
+    return;
+  }
+  if (p.warning) msgs.appendChild(alertBox("warn", p.warning));
+
+  // 下一段登记卡片
+  const card = el("div", { class: "card", style: "background:#fbfcfe" });
+  const endLabel = k + 1 < 96 ? periodLabel(k + 1) : "24:00";
+  card.appendChild(el("h3", {}, `下一段：第 ${k + 1} 段（${periodLabel(k)} – ${endLabel}）`));
+  card.appendChild(el("p", { class: "muted" },
+    `段初电量（上一段实测期末）：${socBefore} Wh；该段计划预测：用电 ${planRow.load} Wh、` +
+    `光伏 ${planRow.pv} Wh、购电上限 ${planRow.grid_limit} Wh、单价 ${planRow.price} 元/kWh。`));
+
+  const fields = [
+    ["load", "实际用电 Wh"], ["pv", "实际光伏 Wh"],
+    ["grid_buy", "实际购电 Wh"], ["soc_end", "期末电量 Wh"],
+  ];
+  const grid = el("div", { class: "grid4" });
+  const fmap = {};
+  for (const [key, label] of fields) {
+    const inp = el("input", { type: "number", min: "0", step: "1",
+      style: "width:100%;padding:9px;border:1px solid #dde3ea;border-radius:6px;margin-top:5px" });
+    // 便捷预填预测值（用电/光伏），减少录入
+    if (key === "load") inp.value = planRow.load;
+    if (key === "pv") inp.value = planRow.pv;
+    if (key === "grid_buy") inp.value = planRow.grid_buy;
+    if (key === "soc_end") inp.value = planRow.soc_end;
+    fmap[key] = inp;
+    grid.appendChild(el("div", {}, el("label", { style: "font-size:12px;color:#6b7684" },
+      label, key === "grid_buy" ? `（≤ ${planRow.grid_limit}）` : "", inp)));
+  }
+  card.appendChild(grid);
+  card.appendChild(el("div", { class: "toolbar", style: "margin-top:14px" },
+    el("button", {
+      class: "btn",
+      onclick: async () => {
+        msgs.innerHTML = "";
+        const body = {};
+        for (const key of Object.keys(fmap)) body[key] = fmap[key].value;
+        try {
+          const res = await api("/api/actuals", { method: "POST", body });
+          let msg = `第 ${k + 1} 段实测已保存并锁定。`;
+          if (res.warning) {
+            msgs.appendChild(alertBox("warn", res.warning));
+          } else {
+            msgs.appendChild(alertBox("ok", msg + " 余段已按实测电量重算。"));
+          }
+          setTimeout(() => location.reload(), 500);
+        } catch (e) {
+          const lines = (e.data && e.data.errors) ? e.data.errors : [e.message];
+          msgs.appendChild(alertBox("error",
+            `第 ${k + 1} 段（${periodLabel(k)}）实测未通过校验，该记录未入库：` +
+            (lines.length > 1 ? "① " + lines.join("；② ") : lines[0])));
+        }
+      },
+    }, "提交并锁定本段"),
+    el("span", { class: "muted" },
+      "校验能量平衡、不向电网送电、购电上限、电量边界与充放电上限；错误记录不会入库。")
+  ));
+  root.appendChild(card);
+}
+
+function historyTable(st) {
+  const actuals = st.actuals, p = st.plan;
+  if (!actuals.length) {
+    root.appendChild(el("p", { class: "muted" }, "尚无已执行时段。"));
+    return;
+  }
+  const card = el("div", { class: "card" });
+  card.appendChild(el("h2", {}, `已执行时段（${actuals.length} 段，已锁定）`));
+  const wrap = el("div", { class: "table-wrap", style: "max-height:380px" });
+  const tbl = el("table", { class: "data" });
+  tbl.innerHTML = `<thead><tr><th class="t">段</th><th class="t">时间</th>
+    <th>实际用电</th><th>实际光伏</th><th>实际购电</th><th>期末电量</th>
+    <th>充电</th><th>放电</th><th>弃光</th><th>费用 元</th></tr></thead>`;
+  const tb = el("tbody");
+  actuals.forEach((a, i) => {
+    const pr = st.periods[i];
+    const net = a.soc_end - (i === 0 ? p.initial_soc : actuals[i - 1].soc_end);
+    tb.appendChild(el("tr", { class: "executed locked" },
+      el("td", { class: "t" }, String(a.period + 1)),
+      el("td", { class: "t mono" }, a.time_label),
+      el("td", { class: "mono" }, String(a.load)),
+      el("td", { class: "mono" }, String(a.pv)),
+      el("td", { class: "mono" }, String(a.grid_buy)),
+      el("td", { class: "mono" }, String(a.soc_end)),
+      el("td", { class: "mono" }, String(Math.max(net, 0))),
+      el("td", { class: "mono" }, String(Math.max(-net, 0))),
+      el("td", { class: "mono" }, String(pr.curtail)),
+      el("td", { class: "mono" }, yuan(pr.cost))));
+  });
+  tbl.appendChild(tb);
+  wrap.appendChild(tbl);
+  card.appendChild(wrap);
+  card.appendChild(el("p", { class: "muted", style: "margin-top:10px" },
+    "已执行段不可修改；每次登记后系统以实测期末电量为初值重算后续全部时段。"));
+  root.appendChild(card);
+}
+
+(async () => {
+  try {
+    const st = await api("/api/state");
+    actualForm(st);
+    historyTable(st);
+  } catch (e) {
+    msgs.appendChild(alertBox("error", e.message));
+  }
+})();
+</script>
+{% endblock %}
